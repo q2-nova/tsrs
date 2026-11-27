@@ -1,6 +1,18 @@
 # TSRS
 
-`tsrsd` is the Q2 userspace network daemon built on [tailscale-rs](https://github.com/tailscale/tailscale-rs). It provides the HTTP proxy and Unix socket LocalAPI used by the player, including status, browser login and logout. The Q2 player supervises the daemon. The Q2 OS packages it as `/usr/libexec/q2-network/tsrsd`.
+TSRS helps the [Q2 player app](https://github.com/q2-nova/q2-player) on the
+Shanling Q2 portable music player connect to music servers on a Tailscale
+network. This repository builds `tsrsd`, the background service that forwards
+the app's connections and handles Tailscale sign-in, sign-out and status.
+
+If you're contributing to the daemon, start with the [native build and
+tests](#native-build-and-tests). They run on Linux without a Q2 or a Tailscale
+account. There is no stable standalone download. The [Q2 operating
+system](https://github.com/q2-nova/q2-os) packages the daemon with the player.
+
+`tsrsd` is built on [tailscale-rs](https://github.com/tailscale/tailscale-rs).
+The player supervises the daemon and uses its HTTP proxy and Unix socket
+LocalAPI. The Q2 OS installs it at `/usr/libexec/q2-network/tsrsd`.
 
 ## Native build and tests
 
