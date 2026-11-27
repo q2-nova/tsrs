@@ -14,8 +14,6 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE / 'tools'))
-import cores  # noqa: E402
 # tailscale-rs main of 2026-11-20, after v0.7.1.
 TSRS_COMMIT = 'e88a60083ed2b9b2b8fd62733fe86ea887e72780'
 TSRS_URL = 'https://github.com/tailscale/tailscale-rs.git'
@@ -329,5 +327,4 @@ def main():
 
 
 if __name__ == '__main__':
-    with cores.watched():
-        main()
+    main()

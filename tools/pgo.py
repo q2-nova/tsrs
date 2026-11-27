@@ -41,8 +41,6 @@ import time
 import urllib.request
 
 HERE = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(HERE / 'tools'))
-import cores  # noqa: E402
 # Bump when the workloads or their durations change.
 TRAINING_VERSION = 1
 HEADSCALE = {
@@ -214,7 +212,6 @@ class Tailnet:
         self.processes, self.phases, self.daemon, self.restarts = [], [], None, []
         self.current = 'start'
         self.work.mkdir(parents=True)
-        cores.watch(self.work)
         # Unix socket paths have a 108-byte limit.
         self.sockets = Path(tempfile.mkdtemp(prefix='q2pgo-', dir='/tmp'))
 
@@ -565,5 +562,4 @@ def main():
 
 
 if __name__ == '__main__':
-    with cores.watched():
-        main()
+    main()

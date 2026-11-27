@@ -34,8 +34,6 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / 'tools'))
-import cores  # noqa: E402
 _spec = importlib.util.spec_from_file_location('tsrs_pgo', ROOT / 'tools/pgo.py')
 pgo = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(pgo)
@@ -233,7 +231,7 @@ def main():
     if pgo.sha256(headscale) != pgo.HEADSCALE['sha256']:
         sys.exit(f'{headscale}: SHA-256 differs from the pinned Headscale release')
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix='tsrsd-control-') as tmp, cores.swept(tmp):
+    with tempfile.TemporaryDirectory(prefix='tsrsd-control-') as tmp:
         work = Path(tmp)
         run = subprocess.run([*args.netns.split(), sys.executable, '-I', str(Path(__file__).resolve()), '--inside',
                               '--work', str(work), '--tsrsd', str(args.tsrsd.resolve()), '--peer', str(args.peer.resolve()),
@@ -251,5 +249,4 @@ def main():
 
 
 if __name__ == '__main__':
-    with cores.watched():
-        main()
+    main()
