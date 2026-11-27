@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 
@@ -43,6 +44,23 @@ class ReleaseArchive(unittest.TestCase):
     def test_round_trip(self):
         release.pack(ROOT, self.dir, self.out)
         release.verify(ROOT, self.out)
+
+    def test_profile_receipt_is_carried(self):
+        receipt = dict(program="tsrsd", profile_sha256="1" * 64, training_version=1)
+        self.record.update(profile="release", features=build.Q2_FEATURES,
+                           pgo=dict(profile_sha256="1" * 64, receipt_sha256="2" * 64, receipt=receipt))
+        self.write("result.json", self.record)
+        release.pack(ROOT, self.dir, self.out)
+        with tarfile.open(self.out) as archive:
+            record = json.load(archive.extractfile("result.json"))
+        self.assertEqual(record["pgo"]["receipt"], receipt)
+        self.assertEqual(record["profile"], "release")
+
+    def test_instrumented_build_refused(self):
+        self.record["profile"] = "pgo-instrumented"
+        self.write("result.json", self.record)
+        with self.assertRaises(ValueError):
+            release.pack(ROOT, self.dir, self.out)
 
     def test_changed_binary(self):
         (self.dir / "tsrsd").write_bytes(b"changed")

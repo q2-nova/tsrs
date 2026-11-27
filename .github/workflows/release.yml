@@ -8,7 +8,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -52,7 +52,14 @@ jobs:
             -p compiler.tar.gz -p compiler.tar.gz.sha256
           gh release download "$QEMU_TAG" -R q2-nova/q2-toolchain -D build/qemu-release \
             -p qemu-linux-x86_64.tar.gz -p qemu-linux-x86_64.tar.gz.sha256
-      - name: Verify, relocate, build and smoke-test
+      - name: Allow the training network namespace
+        run: |
+          # The PGO training runs in an unprivileged user and network namespace.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update
+          sudo apt-get install -y nftables
+          unshare --user --map-root-user --net -- ip link set lo up
+      - name: Verify, relocate, profile, build and smoke-test
         run: bash ci/build-release.sh
       - name: Publish the tagged daemon
         if: github.event_name == 'push'
@@ -61,5 +68,5 @@ jobs:
         run: |
           cd build
           gh release create "$GITHUB_REF_NAME" tsrsd-q2.tar.gz tsrsd-q2.tar.gz.sha256 \
-            third-party-source.tar.gz --verify-tag --prerelease --title "$GITHUB_REF_NAME" \
+            third-party-source.tar.gz q2-tests.json --verify-tag --prerelease --title "$GITHUB_REF_NAME" \
             --notes "Q2 network daemon. See release-lock.json at this tag for its SDK and compiler versions."

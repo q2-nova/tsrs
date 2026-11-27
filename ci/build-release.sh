@@ -24,12 +24,21 @@ rustup toolchain install "$nightly" --profile minimal
 export RUSTUP_TOOLCHAIN="$nightly"
 python3 test_release.py
 python3 ci/test_smoke.py
+python3 test_pgo.py
 python3 build.py fetch
 python3 build.py test
 # The target producer builds std offline. Populate its separately locked registry dependencies.
 cargo fetch --locked --manifest-path "$compiler/install/lib/rustlib/src/rust/library/Cargo.toml"
-python3 build.py q2 --sdk "$sdk" --toolchain-repo "$recipe" --compiler-work "$compiler" \
-  --rust-link "$os/os/rust-link.py" --out build/q2
+inputs=(--sdk "$sdk" --toolchain-repo "$recipe" --compiler-work "$compiler" --rust-link "$os/os/rust-link.py")
+# Profile on the generated tailnet, then build with the profile and run the
+# daemon and dataplane tests built the same way under qemu-mipsel.
+python3 tools/pgo.py profile "${inputs[@]}" --qemu-user "$qemu/bin/qemu-mipsel" --out build/pgo
+python3 build.py q2 "${inputs[@]}" --profile-use build/pgo/tsrsd.profdata --out build/q2
+jq -e '.profile == "release" and .pgo.receipt.program == "tsrsd" and .features == {"tsrsd": []}' build/q2/result.json
+python3 build.py q2-test "${inputs[@]}" --profile-use build/pgo/tsrsd.profdata \
+  --qemu-user "$qemu/bin/qemu-mipsel" --out build/q2-tests
+jq -e '.results.tsrsd.passed >= 37 and .results.ts_dataplane.passed > 0' build/q2-tests/result.json
+cp build/q2-tests/result.json build/q2-tests.json
 python3 release.py pack --build build/q2 --archive build/tsrsd-q2.tar.gz
 python3 release.py verify --archive build/tsrsd-q2.tar.gz
 # Start the shipped binary under qemu-mipsel and check its offline status.

@@ -77,14 +77,56 @@ respective licenses and notices.
 
 The pinned upstream project's [BSD 3-Clause license](LICENSES/tailscale-rs.txt) applies to its code. Its source and original license notices are retained when building the dependency.
 
+## Profile-guided build
+
+Release builds of tsrsd are profile-guided. `tools/pgo.py profile` takes the
+`build.py q2` inputs and the Q2 fork's `qemu-mipsel`. It builds an
+instrumented daemon (`build.py q2 --profile-generate`) and a host tsrsd with
+the `pgo-peer` feature, then trains the instrumented daemon on a generated
+tailnet in a new user and network namespace. Headscale 0.29.7, pinned by
+URL and SHA-256 in `tools/pgo.py`, provides control and its built-in DERP
+server with a generated certificate authority. The host tsrsd is the peer
+and forwards its tailnet port 80 to a generated content server. Everything
+listens on 127.0.0.1; a dummy link with a documentation address carries the
+default route. The workloads are sign-in, name lookups, streaming in the
+player's fetch-ahead pattern, a bulk download, idle keepalives, a link drop
+and return, DERP-only paths, control loss and error replies. The daemon is
+stopped rather than exiting, so the instrumented build counts in continuous
+mode. `train --daemon PATH` runs the same workloads on another Q2 build, such
+as the profile-guided release.
+
+```sh
+python3 tools/pgo.py profile --sdk /path/to/relocated-sdk \
+  --toolchain-repo /path/to/q2-toolchain --compiler-work /path/to/compiler \
+  --rust-link /path/to/q2-os/os/rust-link.py --qemu-user /path/to/qemu-mipsel \
+  --out build/pgo
+python3 build.py q2 ... --profile-use build/pgo/tsrsd.profdata --out build/q2
+python3 build.py q2-test ... --profile-use build/pgo/tsrsd.profdata \
+  --qemu-user /path/to/qemu-mipsel --out build/q2-tests
+```
+
+`build/pgo/receipt.json` records the profile's SHA-256, the compiler, the
+feature set, the coverage summary with the named hot paths (packet filter,
+WireGuard, DERP, proxy copy loop), each phase and the training minutes.
+`build.py q2 --profile-use` refuses a receipt with another compiler or
+feature set and copies it into `result.json`. `q2-test` builds the daemon's
+tests and the dataplane's TSMP reject tests for the Q2 with the same profile
+and runs them under `qemu-mipsel`. The test harness unwinds, as Cargo builds
+tests; the rest matches the release build. Training restarts a daemon that
+exits, as q2nd does: both nodes abort in `ts_dataplane` when control stops. Unprivileged user namespaces must be
+allowed; on Ubuntu set `kernel.apparmor_restrict_unprivileged_userns=0`.
+The DERP-only phase needs `nft`.
+
 ## Release the target daemon
 
 The entries in [release-lock.json](release-lock.json) select tagged
 releases of q2-os, q2-toolchain and the Q2 QEMU. Push a tag such as
 `v0.1.0-rc.1` once those releases are available. GitHub Actions downloads
 their SDK, compiler and emulator, checks the downloaded assets, runs the
-tests, builds the daemon, runs the smoke test on it under `qemu-mipsel`, and publishes
-`tsrsd-q2.tar.gz`, its checksum and the dependency source bundle on the
-daemon’s GitHub prerelease. A manual dispatch exercises the same build.
+tests, profiles and builds the daemon, runs its tests built with the same
+profile and the smoke test on it under `qemu-mipsel`, and publishes
+`tsrsd-q2.tar.gz`, its checksum, `q2-tests.json` and the dependency source
+bundle on the daemon’s GitHub prerelease. The archive's `result.json`
+carries the profile receipt. A manual dispatch exercises the same build.
 Private dependency repositories require a contents-read credential stored as
 `Q2_COMPONENTS_READ_TOKEN`.

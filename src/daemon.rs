@@ -368,6 +368,10 @@ pub async fn run(args: Daemon) -> ExitCode {
     };
     PROXY_FD.store(listener.as_raw_fd(), Relaxed);
     log!("listening");
+    #[cfg(feature = "pgo-peer")]
+    if let Some((port, target)) = std::env::var(crate::peer::FORWARD_VAR).ok().as_deref().and_then(crate::peer::parse) {
+        tokio::spawn(crate::peer::forward(device_rx.clone(), port, target));
+    }
     let tailnet = Arc::new(Tailnet { shared: shared.clone(), device: device_rx });
     tokio::spawn(localapi_serve(socket, shared.clone(), tailnet.clone()));
     let counters = Arc::new(proxy::Counters::default());
