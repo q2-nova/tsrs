@@ -62,6 +62,10 @@ def pack(source, directory, out):
     if (not all(re.fullmatch("[0-9a-f]{64}", value) for value in record["build_dependencies"].values())
             or runtime["toolchain"] != load_producer(source).RUST_TOOLCHAIN):
         raise ValueError("unexpected build dependencies")
+    # A profile-guided build carries its profile receipt (build.py q2 --profile-use).
+    producer = load_producer(source)
+    runtime.update(profile=record.get("profile", "release"), features=record.get("features", producer.Q2_FEATURES),
+                   pgo=record.get("pgo"))
     runtime.update(size_sha256=sha(dump(size)), symbols_receipt_sha256=sha(dump(sym)))
     payload = dict(zip(FILES, (binary, dump(runtime), dump(size), dump(sym))))
     out.parent.mkdir(parents=True, exist_ok=True)

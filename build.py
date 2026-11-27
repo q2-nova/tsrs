@@ -22,6 +22,8 @@ PATCH = HERE / 'tailscale-rs.patch'
 NAME = 'tsrsd'
 RUST_TOOLCHAIN = 'nightly-2026-11-12'
 SOURCE_DATE_EPOCH = '1793404800'
+# Cargo features of a Q2 build; a profile's receipt must name the same set.
+Q2_FEATURES = {NAME: []}
 # The daemon's own inputs: a change to any invalidates a build record.
 INPUTS = [
     'Cargo.toml', 'Cargo.lock', 'build.py', 'tailscale-rs.patch',
@@ -95,8 +97,20 @@ def host(out):
     print(json.dumps(dict(binary=str(binary), sha256=record['sha256'])))
 
 
-def q2(a):
-    out, sdk = a.out, a.sdk
+def pgo_driver(toolchain_repo):
+    path = toolchain_repo / 'tools/q2_pgo.py'
+    if not path.is_file():
+        raise SystemExit(f'the q2-toolchain checkout has no PGO driver: {path}')
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('q2_pgo', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def q2_environment(a):
+    """The checked inputs, build record start and Cargo environment of a Q2 build."""
+    sdk = a.sdk
     toolchain_repo, compiler_work, rust_link = a.toolchain_repo, a.compiler_work, a.rust_link
     toolchain_cli = toolchain_repo / 'tools/x2000_toolchain.py'
     target_base = toolchain_repo / 'q2/toolchain/mipsel-q2-linux-gnu.json'
@@ -111,6 +125,8 @@ def q2(a):
             raise SystemExit(f'executable required: {executable}')
     if subprocess.check_output(['git', '-C', HERE, 'status', '--porcelain', '--untracked-files=no']):
         raise SystemExit('the Q2 build requires committed daemon sources')
+    if getattr(a, 'profile_use', None) and getattr(a, 'profile_generate', None):
+        raise SystemExit('--profile-use and --profile-generate exclude each other')
     commit = subprocess.check_output(['git', '-C', HERE, 'rev-parse', 'HEAD'], text=True).strip()
     record = prepare()
     source_inputs = inputs()
@@ -125,8 +141,30 @@ def q2(a):
         'c_wrapper_sha256': sha(wrapper), 'rust_link_sha256': sha(rust_link),
         'sdk_gcc_sha256': sha(cc), 'sdk_ar_sha256': sha(ar),
     }
+    flags = [f'--remap-path-prefix={HERE}=/tsrs-source', f'--remap-path-prefix={Path.home()}/.cargo=/cargo']
+    record['profile'] = 'release'
+    record['features'] = Q2_FEATURES
+    record['pgo'] = None
+    if getattr(a, 'profile_use', None) or getattr(a, 'profile_generate', None):
+        driver = pgo_driver(toolchain_repo)
+        compiler = driver.compiler_identity(compiler_work / 'install')
+    if getattr(a, 'profile_use', None):
+        receipt_path = a.profile_use.parent / 'receipt.json'
+        try:
+            receipt = json.loads(receipt_path.read_text())
+            driver.check_receipt(receipt, a.profile_use, compiler=compiler,
+                                 feature_set=driver.feature_set_sha256(Q2_FEATURES))
+        except (OSError, ValueError) as error:
+            raise SystemExit(f'{a.profile_use}: {error}')
+        flags += driver.use_flags(a.profile_use)
+        record['pgo'] = {'profile_sha256': sha(a.profile_use), 'receipt_sha256': sha(receipt_path), 'receipt': receipt}
+    if getattr(a, 'profile_generate', None):
+        runtime, _ = driver.runtime(compiler_work / 'install')
+        # Continuous counters: the daemon is stopped, or replaces itself, rather than exiting.
+        flags += driver.instrument_flags(a.profile_generate, runtime, continuous=True)
+        record['profile'] = 'pgo-instrumented'
     cache_inputs = [commit, str(sdk), str(compiler_work), record['build_dependencies'],
-                    os.environ.get('Q2_X2000_SCHED', '1'), os.environ.get('Q2_X2000_C', '1')]
+                    os.environ.get('Q2_X2000_SCHED', '1'), os.environ.get('Q2_X2000_C', '1'), flags]
     cache_key = hashlib.sha256(json.dumps(cache_inputs, sort_keys=True).encode()).hexdigest()[:16]
     target_dir = HERE / 'build' / f'target-q2-{cache_key}'
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -142,13 +180,24 @@ def q2(a):
                CFLAGS_mipsel_q2_os_linux_gnu='-mabi=32 -march=mips32r2 -mfp64 -mnan=2008 -mabs=2008',
                CARGO_TARGET_MIPSEL_Q2_OS_LINUX_GNU_LINKER=str(rust_link),
                SOURCE_DATE_EPOCH=SOURCE_DATE_EPOCH, CARGO_BUILD_JOBS='2',
-               RUSTFLAGS=f'--remap-path-prefix={HERE}=/tsrs-source --remap-path-prefix={Path.home()}/.cargo=/cargo')
+               CARGO_ENCODED_RUSTFLAGS='\x1f'.join(map(str, flags)))
+    env.pop('RUSTFLAGS', None)
     env.update(x2000_toolchain.cargo_env(sdk=str(sdk)))
     if 'Q2_X2000_CC_ARCH' in env:
         env.pop('CFLAGS_mipsel_q2_os_linux_gnu')
-    run(['cargo', '+' + RUST_TOOLCHAIN, 'build', '--release', '--offline', '--locked',
-         '-Zbuild-std=std,panic_abort', '-Zbuild-std-features=panic-unwind,backtrace,backtrace-trace-only',
-         '-Zjson-target-spec', '--target', spec], cwd=HERE, env=env)
+    cargo = ['cargo', '+' + RUST_TOOLCHAIN]
+    target = ['--release', '--offline', '--locked', '-Zbuild-std=std,panic_abort',
+              '-Zbuild-std-features=panic-unwind,backtrace,backtrace-trace-only', '-Zjson-target-spec', '--target', spec]
+    return dict(commit=commit, record=record, source_inputs=source_inputs, target_dir=target_dir, env=env,
+                cargo=cargo, target=target, prefix=prefix, readelf=readelf)
+
+
+def q2(a):
+    out = a.out
+    build = q2_environment(a)
+    commit, record, source_inputs, target_dir = (build[k] for k in ('commit', 'record', 'source_inputs', 'target_dir'))
+    prefix, readelf = build['prefix'], build['readelf']
+    run([*build['cargo'], 'build', *build['target']], cwd=HERE, env=build['env'])
     if source_inputs != inputs() or prepare() != {key: record[key] for key in ('tailscale_rs_commit', 'patch_sha256')}:
         raise SystemExit('daemon sources changed during the build')
     out.mkdir(parents=True, exist_ok=False)
@@ -166,13 +215,57 @@ def q2(a):
     print(json.dumps(dict(binary=str(out / NAME), sha256=record['q2_sha256'], bytes=len(raw))))
 
 
+# Tests that start the test binary again as a child process; qemu-user cannot
+# start a MIPS child without a binfmt handler, so q2-test skips them.
+SELF_EXEC_TESTS = ('timer_wakeups::tests::timers_wake_the_runtime_thread_once_per_expiry',)
+
+
+def q2_test(a):
+    """Build the daemon's tests for the Q2 (with --profile-use, as the release is built)
+    and run them under qemu-mipsel; also the dataplane's TSMP reject tests."""
+    build = q2_environment(a)
+    sysroot = a.sdk / 'mipsel-buildroot-linux-gnu/sysroot'
+    # libtest catches panics, so the test harness unwinds (cargo ignores
+    # panic = "abort" for tests); abort-mode tests would need a child process
+    # per test, which qemu-user cannot start. Everything else is the release build.
+    target = ['-Zbuild-std=std' if arg == '-Zbuild-std=std,panic_abort' else arg for arg in build['target']]
+    results = {}
+    for name, args in (('tsrsd', ['--bin', NAME]), ('ts_dataplane', ['-p', 'ts_dataplane', '--lib'])):
+        output = subprocess.run([*build['cargo'], 'test', '--no-run', '--message-format=json-render-diagnostics', *args, *target],
+                                cwd=HERE, env=dict(build['env'], CARGO_PROFILE_RELEASE_PANIC='unwind'), check=True,
+                                stdout=subprocess.PIPE, text=True).stdout
+        binaries = [message['executable'] for message in map(json.loads, output.splitlines())
+                    if message.get('reason') == 'compiler-artifact' and message.get('executable')
+                    and message.get('profile', {}).get('test')]
+        if len(binaries) != 1:
+            raise SystemExit(f'{name}: expected one test executable, found {binaries}')
+        filter_args = ['tsmp_reject'] if name == 'ts_dataplane' else [
+            arg for test in SELF_EXEC_TESTS for arg in ('--skip', test)]
+        process = subprocess.run([str(a.qemu_user), '-cpu', 'P5600', '-L', str(sysroot), binaries[0], *filter_args,
+                                  '--test-threads=1'], capture_output=True, text=True, timeout=1800)
+        sys.stdout.write(process.stdout[-3000:])
+        summary = [line for line in process.stdout.splitlines() if line.startswith('test result:')]
+        if process.returncode or len(summary) != 1:
+            sys.stderr.write(process.stderr[-3000:])
+            raise SystemExit(f'{name} tests failed under qemu-mipsel')
+        passed = int(summary[0].split(' passed')[0].rsplit(' ', 1)[-1])
+        results[name] = {'passed': passed, 'summary': summary[0], 'executable_sha256': sha(binaries[0]),
+                         'skipped_self_exec': list(SELF_EXEC_TESTS) if name == NAME else []}
+    record = dict(passed=True, target='q2-tests', panic='unwind', source_commit=build['commit'], pgo=build['record']['pgo'],
+                  qemu_user_sha256=sha(a.qemu_user), results=results)
+    a.out.mkdir(parents=True, exist_ok=False)
+    (a.out / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
+    print(json.dumps({name: value['summary'] for name, value in results.items()}))
+
+
 def admit(out):
     """A Q2 build output a release may ship: its record passed, its binary and
     receipts are the recorded ones, and its inputs are this tree's."""
     out = Path(out)
     record = json.loads((out / 'result.json').read_text())
     binary = out / NAME
-    if (record.get('passed') is not True or record.get('target') != 'q2' or binary.is_symlink() or not binary.is_file()
+    if (record.get('passed') is not True or record.get('target') != 'q2' or record.get('profile', 'release') != 'release'
+            or binary.is_symlink() or not binary.is_file()
             or record.get('q2_sha256') != sha(binary) or record.get('symbols_receipt_sha256') != sha(out / 'symbols/receipt.json')
             or record.get('size_sha256') != sha(out / 'size.json')):
         raise ValueError('tsrsd must be the binary of a passing build.py q2 output')
@@ -182,7 +275,8 @@ def admit(out):
     if raw[:6] != b'\x7fELF\x01\x01' or raw[18:20] != b'\x08\x00':
         raise ValueError('tsrsd must be a little-endian ELF32 MIPS binary')
     return dict(sha256=record['q2_sha256'], bytes=record['bytes'], source_commit=record['source_commit'],
-                tailscale_rs_commit=TSRS_COMMIT, patch_sha256=record['patch_sha256'], record_sha256=sha(out / 'result.json'))
+                tailscale_rs_commit=TSRS_COMMIT, patch_sha256=record['patch_sha256'], record_sha256=sha(out / 'result.json'),
+                profile_sha256=(record.get('pgo') or {}).get('profile_sha256'))
 
 
 def main():
@@ -194,12 +288,18 @@ def main():
     actions.add_parser('fetch')
     actions.add_parser('test')
     actions.add_parser('upstream-test')
-    for action in ('host', 'q2', 'admit'):
+    for action in ('host', 'q2', 'q2-test', 'admit'):
         command = actions.add_parser(action)
         command.add_argument('--out', type=lambda path: Path(path).resolve(), required=True)
-    for name in ('sdk', 'toolchain-repo', 'compiler-work', 'rust-link'):
-        command = actions.choices['q2']
-        command.add_argument('--' + name, type=lambda path: Path(path).resolve(), required=True)
+    for action in ('q2', 'q2-test'):
+        command = actions.choices[action]
+        for name in ('sdk', 'toolchain-repo', 'compiler-work', 'rust-link'):
+            command.add_argument('--' + name, type=lambda path: Path(path).resolve(), required=True)
+        command.add_argument('--profile-use', type=lambda path: Path(path).resolve(),
+                             help='PGO profile; its receipt.json beside it must match this build')
+    actions.choices['q2'].add_argument('--profile-generate', type=lambda path: Path(path).resolve(), metavar='PROFILES',
+                                       help='build an instrumented daemon that writes raw profiles to PROFILES (tools/pgo.py)')
+    actions.choices['q2-test'].add_argument('--qemu-user', type=lambda path: Path(path).resolve(), required=True)
     a = p.parse_args()
     if a.action == 'prepare':
         print(json.dumps(prepare(a.tailscale_source)))
@@ -220,6 +320,8 @@ def main():
         p.error('--out requires an unused directory')
     elif a.action == 'host':
         host(a.out)
+    elif a.action == 'q2-test':
+        q2_test(a)
     else:
         q2(a)
 

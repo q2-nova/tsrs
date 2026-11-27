@@ -24,6 +24,10 @@ libc = "0.2"
 [patch.crates-io]
 tokio = { git = "https://github.com/q2-nova/tokio", rev = "22ab0ee6ac7fc4be568acde63de8c6eac0f274b7" }
 
+[features]
+# The PGO training fixture's host peer (src/peer.rs). Q2 builds enable no features.
+pgo-peer = []
+
 [dev-dependencies]
 proptest = { version = "1", default-features = false, features = ["std"] }
 

@@ -10,6 +10,8 @@ mod keyfile;
 mod link;
 mod localapi;
 mod log;
+#[cfg(feature = "pgo-peer")]
+mod peer;
 mod proxy;
 mod sys;
 mod tailnet;

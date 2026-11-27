@@ -17,10 +17,11 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Test the release archive and smoke controls
+      - name: Test the release archive, smoke and PGO controls
         run: |
           python3 test_release.py
           python3 ci/test_smoke.py
+          python3 test_pgo.py
       - name: Install the pinned Rust
         run: |
           toolchain=$(python3 -c 'import build; print(build.RUST_TOOLCHAIN)')
