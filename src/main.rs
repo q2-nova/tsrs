@@ -13,6 +13,7 @@ mod log;
 mod proxy;
 mod sys;
 mod tailnet;
+mod timer_wakeups;
 mod watchdog;
 
 use std::process::ExitCode;
