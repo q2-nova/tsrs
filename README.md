@@ -45,20 +45,11 @@ The pinned upstream project's [BSD 3-Clause license](LICENSES/tailscale-rs.txt) 
 
 ## Release the target daemon
 
-Run native tests locally, cross-build the daemon, and keep the full debug
-companions locally. From the release tools checkout, package that exact target
-build. Set `SOURCE` to the clean tagged producer checkout.
-
-```sh
-python3 release.py --source "$SOURCE" pack --build "$SOURCE/build/q2" --archive tsrsd-q2.tar.gz
-```
-
-The archive contains the deployed ELF and the OS installer's three required
-records. Portable diagnostics carry build hashes and size measurements. Scan
-the resulting files and review dependency notices before staging. Push the
-source tag, then create a GitHub draft release at that existing tag and attach
-the archive and applicable notices. Run **Qualify daemon release** from the
-default branch with the tag and the SHA-256 printed above. It runs the native
-tests at that tag and checks the downloaded bytes with the same admission code
-used locally. Publish the qualified draft to make those bytes available to OS
-builds. A target release reuses the selected compiler and SDK.
+The two entries in [release-lock.json](release-lock.json) select tagged
+releases of q2-os and q2-toolchain. Push a tag such as `v0.1.0-rc.1` once
+those releases are available. GitHub Actions downloads their SDK and compiler,
+checks the downloaded assets, runs the tests, builds the daemon, and publishes
+`tsrsd-q2.tar.gz`, its checksum and the dependency source bundle on the
+daemon’s GitHub prerelease. A manual dispatch exercises the same build.
+Private dependency repositories require a contents-read credential stored as
+`Q2_COMPONENTS_READ_TOKEN`.
