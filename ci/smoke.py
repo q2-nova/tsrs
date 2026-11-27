@@ -15,6 +15,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import resource
 import signal
 import socket
 import subprocess
@@ -253,4 +254,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # qemu-user writes a guest core into the working directory on a crash,
+    # and the core carries the host environment. No dumps.
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     main()
