@@ -1,0 +1,34 @@
+# Q2 userspace daemon built on a pinned, patched tailscale-rs.
+[package]
+name = "tsrsd"
+version = "0.1.3"
+edition = "2024"
+publish = false
+license = "BSD-3-Clause"
+
+[dependencies]
+tailscale = { path = "build/tailscale-rs" }
+# The patch's hooks: the dataplane's filter counters and TSMP resets, the control
+# connection's map-message count (the watchdog).
+ts_dataplane = { path = "build/tailscale-rs/crates/net/ts_dataplane" }
+ts_control = { path = "build/tailscale-rs/crates/control_plane/ts_control" }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time", "macros", "sync"] }
+httparse = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+# A panic ends the process; q2nd restarts it. tailscale-rs has open panics on
+# network loss (upstream #439, #436, #495) that would otherwise leave actors dead.
+panic = "abort"
+# Symbols stay in the build output; tools/elf_symbols.py keeps the unstripped and
+# debug companions and produces the stripped deployment ELF.
+debug = "line-tables-only"
+strip = false
