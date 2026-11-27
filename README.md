@@ -16,7 +16,7 @@ LocalAPI. The Q2 OS installs it at `/usr/libexec/q2-network/tsrsd`.
 
 ## Native build and tests
 
-Use Linux with Python 3, Git, Rust and a C toolchain. Preparation clones the pinned upstream commit and applies `tailscale-rs.patch` in `build/tailscale-rs`. `prepare --tailscale-source /path/to/repo` can use a local Git repository containing that commit. Every build verifies the upstream commit and the applied patch. Cargo locks the registry dependencies in `Cargo.lock`.
+Use Linux with Python 3, Git, Rust and a C toolchain. Preparation clones the pinned upstream commit and applies `tailscale-rs.patch` in `build/tailscale-rs`. `prepare --tailscale-source /path/to/repo` can use a local Git repository containing that commit. Every build verifies the upstream commit and the applied patch. Cargo locks the registry dependencies in `Cargo.lock`. tokio comes from branch `q2/1.54.1` of the [q2-nova/tokio](https://github.com/q2-nova/tokio) fork, pinned by commit, which wakes the runtime thread once per timer expiry.
 
 ```sh
 python3 build.py prepare
