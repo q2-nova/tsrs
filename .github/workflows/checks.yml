@@ -1,0 +1,41 @@
+name: Daemon checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Test the release archive and smoke controls
+        run: |
+          python3 test_release.py
+          python3 ci/test_smoke.py
+      - name: Install the pinned Rust
+        run: |
+          toolchain=$(python3 -c 'import build; print(build.RUST_TOOLCHAIN)')
+          rustup toolchain install "$toolchain" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+      - name: Cache downloaded crates
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.cargo/registry
+          key: registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+      - name: Fetch locked dependencies and test the daemon
+        run: |
+          python3 build.py fetch
+          python3 build.py test
+      - name: Build the host daemon and run the smoke
+        run: |
+          python3 build.py host --out build/host
+          python3 ci/smoke.py --tsrsd build/host/tsrsd
