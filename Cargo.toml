@@ -4,7 +4,7 @@ name = "tsrsd"
 version = "0.1.3"
 edition = "2024"
 publish = false
-license = "BSD-3-Clause"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 tailscale = { path = "build/tailscale-rs" }

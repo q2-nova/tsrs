@@ -1,0 +1,64 @@
+name: Qualify daemon release
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Exercise the archive controls or qualify an existing draft
+        type: choice
+        options: [validate, qualify]
+        default: validate
+      tag:
+        description: Existing source tag with a draft release
+        required: false
+        type: string
+      sha256:
+        description: Locally verified SHA-256 of tsrsd-q2.tar.gz
+        required: false
+        type: string
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - run: python3 test_release.py
+  qualify:
+    needs: validate
+    if: inputs.operation == 'qualify'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      TAG: ${{ inputs.tag }}
+      DIGEST: ${{ inputs.sha256 }}
+      RUSTUP_TOOLCHAIN: nightly-2026-11-12
+    steps:
+      - name: Validate release selection
+        run: |
+          [[ "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]
+          [[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          path: tagged
+          persist-credentials: false
+      - name: Run daemon checks at the release tag
+        working-directory: tagged
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          python3 build.py fetch
+          python3 build.py test
+      - name: Verify draft bytes against the local candidate and source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true
+          gh release download "$TAG" --pattern tsrsd-q2.tar.gz --output tsrsd-q2.tar.gz
+          printf '%s  tsrsd-q2.tar.gz\n' "$DIGEST" | sha256sum -c -
+          python3 release.py --source tagged verify --archive tsrsd-q2.tar.gz
+          printf 'Verified %s at %s. Archive SHA-256: %s\n' "$TAG" "$(git -C tagged rev-parse HEAD)" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"

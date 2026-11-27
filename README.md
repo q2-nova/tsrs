@@ -33,6 +33,32 @@ python3 build.py admit --out build/q2
 
 The output directory contains the stripped MIPS ELF `tsrsd`, its `result.json` build record, `size.json`, and the debug companions under `symbols/`. Pass the directory to the Q2 OS composer with `--tsrsd build/q2`. Each build requires an unused output directory. Keep the companions with the exact shipped binary for diagnostics.
 
-## Attribution
+## License and attribution
+
+Original Q2 daemon and build code is available under the GNU General Public
+License, version 3 or (at your option) any later version
+(`GPL-3.0-or-later`). See [COPYING](COPYING). The upstream source, changes
+distributed as the tailscale-rs patch and other dependencies retain their
+respective licenses and notices.
 
 The pinned upstream project's [BSD 3-Clause license](LICENSES/tailscale-rs.txt) applies to its code. Its source and original license notices are retained when building the dependency.
+
+## Release the target daemon
+
+Run native tests locally, cross-build the daemon, and keep the full debug
+companions locally. From the release tools checkout, package that exact target
+build. Set `SOURCE` to the clean tagged producer checkout.
+
+```sh
+python3 release.py --source "$SOURCE" pack --build "$SOURCE/build/q2" --archive tsrsd-q2.tar.gz
+```
+
+The archive contains the deployed ELF and the OS installer's three required
+records. Portable diagnostics carry build hashes and size measurements. Scan
+the resulting files and review dependency notices before staging. Push the
+source tag, then create a GitHub draft release at that existing tag and attach
+the archive and applicable notices. Run **Qualify daemon release** from the
+default branch with the tag and the SHA-256 printed above. It runs the native
+tests at that tag and checks the downloaded bytes with the same admission code
+used locally. Publish the qualified draft to make those bytes available to OS
+builds. A target release reuses the selected compiler and SDK.
