@@ -2,7 +2,10 @@
 //!
 //! - control silence (upstream #210): the control connection reads no map
 //!   response, keep-alives included, for [`CONTROL_SILENCE`] while the node is
-//!   running and the host has a default route;
+//!   running, the host has a default route and the device is not already
+//!   reconnecting to control (after a lost map stream it reconnects with
+//!   backoff and keeps its data plane; a restart would drop that until control
+//!   answers);
 //! - a long suspend: the control connection is stale after the system slept
 //!   longer than control's keep-alive interval, so the device restarts once the
 //!   network is back rather than after a further [`CONTROL_SILENCE`];
@@ -54,6 +57,8 @@ pub struct Sample {
     pub map_messages: u32,
     pub running: bool,
     pub network_up: bool,
+    /// The device is opening a new control connection (tailscale-rs.patch).
+    pub control_reconnecting: bool,
 }
 
 #[derive(Debug, Default)]
@@ -91,8 +96,9 @@ impl Watchdog {
         } else {
             self.heard = now.monotonic;
         }
-        if !now.running || !now.network_up {
-            // Silence while not running or off the network says nothing about control.
+        if !now.running || !now.network_up || now.control_reconnecting {
+            // Silence while not running, off the network or reconnecting says nothing new about
+            // control.
             self.heard = now.monotonic;
             return None;
         }
@@ -139,7 +145,8 @@ mod tests {
     use super::*;
 
     fn s(at: u64, messages: u32) -> Sample {
-        Sample { monotonic: Duration::from_secs(at), boot: Duration::from_secs(at), map_messages: messages, running: true, network_up: true }
+        Sample { monotonic: Duration::from_secs(at), boot: Duration::from_secs(at), map_messages: messages, running: true, network_up: true,
+                 control_reconnecting: false }
     }
 
     fn run(dog: &mut Watchdog, from: u64, to: u64, f: impl Fn(u64) -> Sample) -> Vec<(u64, Reason)> {
@@ -163,6 +170,16 @@ mod tests {
         assert_eq!(run(&mut dog, 910, 1800, |t| Sample { network_up: false, ..s(t, 0) }), vec![]);
         // Silence counts from the network's return.
         assert_eq!(run(&mut dog, 1810, 2000, |t| s(t, 0)), vec![(1920, Reason::ControlSilent)]);
+    }
+
+    #[test]
+    fn no_control_silence_restart_while_the_device_reconnects() {
+        let mut dog = Watchdog::default();
+        assert_eq!(run(&mut dog, 0, 300, |t| s(t, (t / 60) as u32)), vec![]);
+        // Control goes away at 300 and the device reconnects for 10 minutes: no restart.
+        assert_eq!(run(&mut dog, 310, 900, |t| Sample { control_reconnecting: true, ..s(t, 5) }), vec![]);
+        // Reconnected but silent again: silence counts from the last sample while reconnecting.
+        assert_eq!(run(&mut dog, 910, 1100, |t| s(t, 5)), vec![(1020, Reason::ControlSilent)]);
     }
 
     #[test]

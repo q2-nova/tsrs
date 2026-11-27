@@ -222,7 +222,7 @@ SELF_EXEC_TESTS = ('timer_wakeups::tests::timers_wake_the_runtime_thread_once_pe
 
 def q2_test(a):
     """Build the daemon's tests for the Q2 (with --profile-use, as the release is built)
-    and run them under qemu-mipsel; also the dataplane's TSMP reject tests."""
+    and run them under qemu-mipsel; also the dataplane's TSMP reject and transport queue tests."""
     build = q2_environment(a)
     sysroot = a.sdk / 'mipsel-buildroot-linux-gnu/sysroot'
     # libtest catches panics, so the test harness unwinds (cargo ignores
@@ -239,7 +239,7 @@ def q2_test(a):
                     and message.get('profile', {}).get('test')]
         if len(binaries) != 1:
             raise SystemExit(f'{name}: expected one test executable, found {binaries}')
-        filter_args = ['tsmp_reject'] if name == 'ts_dataplane' else [
+        filter_args = ['tsmp_reject', 'async_tokio'] if name == 'ts_dataplane' else [
             arg for test in SELF_EXEC_TESTS for arg in ('--skip', test)]
         process = subprocess.run([str(a.qemu_user), '-cpu', 'P5600', '-L', str(sysroot), binaries[0], *filter_args,
                                   '--test-threads=1'], capture_output=True, text=True, timeout=1800)
@@ -310,7 +310,7 @@ def main():
         prepare()
         env = dict(os.environ, CARGO_TARGET_DIR=str(HERE / 'build/target-host'), CARGO_BUILD_JOBS='2')
         run(['cargo', 'test', '--workspace', '--locked', '--offline'], cwd=HERE, env=env)
-        run(['cargo', 'test', '--offline', '--locked', '-p', 'ts_dataplane', '--lib', 'tsmp_reject'],
+        run(['cargo', 'test', '--offline', '--locked', '-p', 'ts_dataplane', '--lib', '--', 'tsmp_reject', 'async_tokio'],
             cwd=HERE, env=env)
     elif a.action == 'upstream-test':
         upstream_tests()

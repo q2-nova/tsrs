@@ -12,10 +12,10 @@ index a3c7ded..eaddc39 100644
  
          let packetfilter = packet_filter(&map_response);
 diff --git a/crates/control_plane/ts_control/src/lib.rs b/crates/control_plane/ts_control/src/lib.rs
-index cd4f5e6..64c634d 100644
+index cd4f5e6..4f28b4a 100644
 --- a/crates/control_plane/ts_control/src/lib.rs
 +++ b/crates/control_plane/ts_control/src/lib.rs
-@@ -11,6 +11,53 @@ pub const PKG_VERSION: &str = if let Some(version) = option_env!("CARGO_PKG_VERS
+@@ -11,6 +11,56 @@ pub const PKG_VERSION: &str = if let Some(version) = option_env!("CARGO_PKG_VERS
      ""
  };
  
@@ -53,8 +53,11 @@ index cd4f5e6..64c634d 100644
 +    pub static CONTROL_LINK_GEN: AtomicU32 = AtomicU32::new(0);
 +    /// The latest link generation for which the home DERP connection was made again.
 +    pub static DERP_LINK_GEN: AtomicU32 = AtomicU32::new(0);
-+    /// Control connections opened again after a link change.
++    /// Control connections opened again after a link change or a lost map stream.
 +    pub static CONTROL_RECONNECTS: AtomicU32 = AtomicU32::new(0);
++    /// Whether a new control connection and map stream are being opened: control silence then
++    /// says nothing the runtime does not already know.
++    pub static CONTROL_RECONNECTING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 +    /// DERP connections made, and DERP connections that ended in an error (a read or write
 +    /// timeout included).
 +    pub static DERP_CONNECTS: AtomicU32 = AtomicU32::new(0);
@@ -69,6 +72,100 @@ index cd4f5e6..64c634d 100644
  pub mod client;
  mod config;
  mod control_dialer;
+diff --git a/crates/net/ts_dataplane/src/async_tokio.rs b/crates/net/ts_dataplane/src/async_tokio.rs
+index 46e8adc..8144aed 100644
+--- a/crates/net/ts_dataplane/src/async_tokio.rs
++++ b/crates/net/ts_dataplane/src/async_tokio.rs
+@@ -351,11 +351,11 @@ impl DataPlane {
+         }
+ 
+         if let Some(to_peers) = to_peers {
+-            write_to_underlay(&core, to_peers).await;
++            write_to_underlay(&mut core, to_peers);
+         }
+ 
+         if let Some(to_local) = to_local {
+-            write_to_overlay(&core, to_local).await;
++            write_to_overlay(&mut core, to_local);
+         }
+     }
+ 
+@@ -370,21 +370,40 @@ impl DataPlane {
+     }
+ }
+ 
+-async fn write_to_overlay(slf: &CoreState, packets: HashMap<OverlayTransportId, Vec<PacketMut>>) {
+-    for (id, packets) in packets {
+-        if let Some(queue) = slf.overlay_transports.get(&id) {
+-            tracing::trace!(overlay_id = ?id, n_packets = packets.len(), "overlay packets");
+-            queue.send(packets).unwrap();
+-        }
++fn write_to_overlay(slf: &mut CoreState, packets: HashMap<OverlayTransportId, Vec<PacketMut>>) {
++    for (id, packets) in &packets {
++        tracing::trace!(overlay_id = ?id, n_packets = packets.len(), "overlay packets");
+     }
++    send_batches(&mut slf.overlay_transports, packets);
+ }
+ 
+-async fn write_to_underlay(slf: &CoreState, packets: underlay_router::outbound::Result) {
+-    for ((tid, endpoint), packets) in packets {
++fn write_to_underlay(slf: &mut CoreState, packets: underlay_router::outbound::Result) {
++    let batches = packets.into_iter().map(|((tid, endpoint), packets)| {
+         tracing::trace!(underlay_id = ?tid, ?endpoint, n_packets = packets.len(), "underlay data packets");
++        (tid, (endpoint, packets))
++    });
++    send_batches(&mut slf.underlay_transports, batches);
++}
+ 
+-        if let Some(queue) = slf.underlay_transports.get(&tid) {
+-            queue.send((endpoint, packets)).unwrap();
++/// q2: transports removed because their queue was closed (`send_batches`).
++pub static TRANSPORTS_CLOSED: AtomicU32 = AtomicU32::new(0);
++
++/// Send each batch to its transport's queue.
++///
++/// q2: a transport whose receiving end is gone (its task or actor ended, for instance when the
++/// runtime stops its children) is removed and its packets are dropped, rather than a panic.
++fn send_batches<K, T>(queues: &mut HashMap<K, Tx<T>>, batches: impl IntoIterator<Item = (K, T)>)
++where
++    K: Eq + core::hash::Hash + core::fmt::Debug,
++{
++    for (id, batch) in batches {
++        let Some(queue) = queues.get(&id) else {
++            continue;
++        };
++        if queue.send(batch).is_err() {
++            tracing::warn!(transport_id = ?id, "transport queue closed: transport removed, packets dropped");
++            queues.remove(&id);
++            TRANSPORTS_CLOSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         }
+     }
+ }
+@@ -395,3 +414,24 @@ async fn option_sleep_until(deadline: Option<tokio::time::Instant>) {
+         None => core::future::pending().await,
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn a_closed_transport_queue_is_removed_instead_of_aborting() {
++        let (open_tx, mut open_rx) = mpsc::unbounded_channel::<Vec<u8>>();
++        let (closed_tx, closed_rx) = mpsc::unbounded_channel::<Vec<u8>>();
++        drop(closed_rx);
++        let mut queues = HashMap::from([(1u32, open_tx), (2u32, closed_tx)]);
++        let before = TRANSPORTS_CLOSED.load(std::sync::atomic::Ordering::Relaxed);
++
++        send_batches(&mut queues, [(2, vec![1]), (1, vec![2]), (3, vec![3]), (2, vec![4])]);
++
++        assert_eq!(queues.keys().copied().collect::<Vec<_>>(), vec![1]);
++        assert_eq!(open_rx.try_recv().unwrap(), vec![2]);
++        assert!(open_rx.try_recv().is_err());
++        assert_eq!(TRANSPORTS_CLOSED.load(std::sync::atomic::Ordering::Relaxed) - before, 1);
++    }
++}
 diff --git a/crates/net/ts_dataplane/src/lib.rs b/crates/net/ts_dataplane/src/lib.rs
 index c1b5dc2..53bd896 100644
 --- a/crates/net/ts_dataplane/src/lib.rs
@@ -801,7 +898,7 @@ index 13494dc..3899ae2 100644
  
  fn stream() -> io::Result<impl Stream<Item = io::Result<Event>>> {
 diff --git a/crates/ts_runtime/src/control_runner.rs b/crates/ts_runtime/src/control_runner.rs
-index 022bb7e..bfa8ed8 100644
+index 022bb7e..01a9071 100644
 --- a/crates/ts_runtime/src/control_runner.rs
 +++ b/crates/ts_runtime/src/control_runner.rs
 @@ -2,6 +2,7 @@ use core::net::{Ipv4Addr, Ipv6Addr};
@@ -812,7 +909,7 @@ index 022bb7e..bfa8ed8 100644
  use kameo::{
      actor::{ActorRef, Spawn},
      message::{Context, StreamMessage},
-@@ -19,8 +20,25 @@ use crate::{
+@@ -19,8 +20,29 @@ use crate::{
      derp_latency::{DerpLatencyMeasurement, DerpLatencyMeasurer},
      direct,
      env::Env,
@@ -826,11 +923,15 @@ index 022bb7e..bfa8ed8 100644
 +/// device's address that each `tcp_connect` asks for first. An update sent on a connection
 +/// whose local address went away (a Wi-Fi radio switched off) had no answer for minutes.
 +const MAP_UPDATE_LIMIT: core::time::Duration = core::time::Duration::from_secs(5);
-+/// q2: after a link change, the longest one attempt to open a control connection and its map
-+/// stream may take, and the waits between attempts.
++/// q2: after a link change or a lost map stream, the longest one attempt to open a control
++/// connection and its map stream may take, and the waits between attempts (also between attempts
++/// to reach control for a registration).
 +const RECONNECT_LIMIT: core::time::Duration = core::time::Duration::from_secs(10);
 +const RECONNECT_FIRST_WAIT: core::time::Duration = core::time::Duration::from_millis(500);
 +const RECONNECT_MAX_WAIT: core::time::Duration = core::time::Duration::from_secs(10);
++/// q2: the longest a registration request without a followup may take before it is repeated on
++/// a new connection.
++const REGISTER_LIMIT: core::time::Duration = core::time::Duration::from_secs(30);
 +/// q2: the longest a control dial may hold the dialer actor (a TCP connect through DNS has no
 +/// limit of its own; one on a link that went away would hold every later dial).
 +const DIAL_LIMIT: core::time::Duration = core::time::Duration::from_secs(15);
@@ -838,7 +939,7 @@ index 022bb7e..bfa8ed8 100644
  /// Actor responsible for maintaining the connection to control.
  ///
  /// This actor is responsible for proxying the map response stream onto the message bus.
-@@ -34,6 +52,19 @@ pub struct ControlRunner {
+@@ -34,6 +56,19 @@ pub struct ControlRunner {
  
      self_node: Option<Node>,
      pending_node_requests: Vec<PendingNodeRequest>,
@@ -858,16 +959,70 @@ index 022bb7e..bfa8ed8 100644
  }
  
  /// The response to [`AuthUrl`]: what the state of control server auth is.
-@@ -130,21 +161,65 @@ impl kameo::Actor for ControlRunner {
+@@ -108,43 +143,109 @@ impl kameo::Actor for ControlRunner {
+     type Error = ControlRunnerError;
+ 
+     async fn on_start(params: Params, slf: ActorRef<Self>) -> Result<Self, Self::Error> {
+-        let client = params
+-            .env
+-            .ask::<DialerActor, _>(
+-                None,
+-                DialNext {
+-                    url: params.config.server_url.clone(),
+-                },
+-                true,
+-            )
+-            .await?;
+-
++        // q2: the registration task dials control, and dials again with backoff while control
++        // cannot be reached, so an unreachable control server never fails this start. The
++        // runtime waits in its own start for this actor and cannot restart it meanwhile, and
++        // restarts that fail at once exceed the supervisor's limit, which stops the runtime and
++        // the transports of its data plane.
++        ts_control::q2::CONTROL_RECONNECTING.store(false, core::sync::atomic::Ordering::Relaxed);
+         Task::supervise_with(&slf, {
+             let aref = slf.downgrade();
+-            let client = client.clone();
+             let params = params.clone();
+ 
+             move || {
+                 let aref = aref.clone();
+-                let client = client.clone();
                  let params = params.clone();
  
                  async move {
 -                    let mut followup = None;
 +                    let mut followup: Option<url::Url> = None;
-+                    let mut client = client;
++                    let mut client: Option<HttpConn> = None;
++                    let mut wait = RECONNECT_FIRST_WAIT;
  
                      loop {
 -                        let result = ts_control::register(
++                        let conn = match &client {
++                            Some(conn) => conn.clone(),
++                            None => match params
++                                .env
++                                .ask::<DialerActor, _>(
++                                    None,
++                                    DialNext {
++                                        url: params.config.server_url.clone(),
++                                    },
++                                    true,
++                                )
++                                .await
++                            {
++                                Ok(conn) => {
++                                    client = Some(conn.clone());
++                                    conn
++                                }
++                                Err(e) => {
++                                    tracing::warn!(error = %e, ?wait, "dialing control to register");
++                                    tokio::time::sleep(wait).await;
++                                    wait = (wait * 2).min(RECONNECT_MAX_WAIT);
++                                    continue;
++                                }
++                            },
++                        };
 +                        let request = ts_control::register(
                              &params.config,
                              &params.config.server_url,
@@ -875,9 +1030,10 @@ index 022bb7e..bfa8ed8 100644
 -                            followup,
 +                            followup.clone(),
                              &params.env.keys,
-                             &client,
+-                            &client,
 -                        )
 -                        .await;
++                            &conn,
 +                        );
 +                        // q2: a followup long-polls until the login is approved. A connection
 +                        // that died silently while it waited (Wi-Fi power save, a NAT timeout)
@@ -898,26 +1054,29 @@ index 022bb7e..bfa8ed8 100644
 +                                Some(r) => r,
 +                                None => {
 +                                    ts_control::q2::count(&ts_control::q2::FOLLOWUP_REPOLLS);
-+                                    match params
-+                                        .env
-+                                        .ask::<DialerActor, _>(
-+                                            None,
-+                                            DialNext {
-+                                                url: params.config.server_url.clone(),
-+                                            },
-+                                            true,
-+                                        )
-+                                        .await
-+                                    {
-+                                        Ok(fresh) => client = fresh,
-+                                        Err(e) => tracing::warn!(error = %e, "redialing control for the login followup"),
-+                                    }
++                                    client = None;
 +                                    continue;
 +                                }
 +                            }
 +                        } else {
-+                            request.await
++                            // q2: a registration that fails (control answering an error, or a
++                            // connection that went away) is tried again on a new connection after
++                            // a wait, in this task.
++                            match tokio::time::timeout(REGISTER_LIMIT, request).await {
++                                Ok(r @ (Ok(()) | Err(RegistrationError::MachineNotAuthorized(_)))) => r,
++                                failed => {
++                                    match failed {
++                                        Ok(Err(e)) => tracing::warn!(error = %e, ?wait, "registration failed"),
++                                        _ => tracing::warn!(?wait, "registration timed out"),
++                                    }
++                                    client = None;
++                                    tokio::time::sleep(wait).await;
++                                    wait = (wait * 2).min(RECONNECT_MAX_WAIT);
++                                    continue;
++                                }
++                            }
 +                        };
++                        wait = RECONNECT_FIRST_WAIT;
  
                          if let Err(RegistrationError::MachineNotAuthorized(Some(u))) = result {
                              tracing::warn!(auth_url = %u, "machine not authorized");
@@ -929,7 +1088,16 @@ index 022bb7e..bfa8ed8 100644
                              followup = Some(u.clone());
  
                              let Some(aref) = aref.upgrade() else {
-@@ -176,6 +251,7 @@ impl kameo::Actor for ControlRunner {
+@@ -163,7 +264,7 @@ impl kameo::Actor for ControlRunner {
+                         let Some(aref) = aref.upgrade() else {
+                             return;
+                         };
+-                        drop(aref.tell(RegisterResult(result.map(|_| client))).await);
++                        drop(aref.tell(RegisterResult(result.map(|_| conn))).await);
+ 
+                         break;
+                     }
+@@ -176,6 +277,7 @@ impl kameo::Actor for ControlRunner {
  
          params.env.subscribe::<DerpLatencyMeasurement>(&slf).await?;
          params.env.subscribe::<direct::NewEndpoints>(&slf).await?;
@@ -937,7 +1105,7 @@ index 022bb7e..bfa8ed8 100644
  
          DerpLatencyMeasurer::supervise(&slf, params.env.clone())
              .spawn()
-@@ -192,6 +268,11 @@ impl kameo::Actor for ControlRunner {
+@@ -192,6 +294,11 @@ impl kameo::Actor for ControlRunner {
              endpoints: Default::default(),
              self_node: None,
              pending_node_requests: Default::default(),
@@ -949,7 +1117,7 @@ index 022bb7e..bfa8ed8 100644
          })
      }
  }
-@@ -281,8 +362,17 @@ impl ControlRunner {
+@@ -281,8 +388,17 @@ impl ControlRunner {
      }
  }
  
@@ -969,7 +1137,7 @@ index 022bb7e..bfa8ed8 100644
      ///
      /// `stream` dictates whether the request is built for a streaming netmap response or as a
      /// request to update to this node's fields in control.
-@@ -331,23 +421,191 @@ impl ControlRunner {
+@@ -331,23 +447,197 @@ impl ControlRunner {
  
          f(request).await
      }
@@ -985,13 +1153,14 @@ index 022bb7e..bfa8ed8 100644
 +    /// The endpoints the stream request carried.
 +    endpoints: Vec<Endpoint>,
 +    stream_gen: u64,
-+    link_gen: u32,
++    /// The link change it follows, if any (none after a lost map stream).
++    link_gen: Option<u32>,
 +}
-+
-+/// q2: the reconnect task asks for the inputs of its stream request when it sends it.
-+struct GetMapInputs;
  
 -    async fn update_map_request(&self) {
++/// q2: the reconnect task asks for the inputs of its stream request when it sends it.
++struct GetMapInputs;
++
 +impl Message<GetMapInputs> for ControlRunner {
 +    type Reply = MapInputs;
 +
@@ -1072,8 +1241,10 @@ index 022bb7e..bfa8ed8 100644
 +        );
 +    }
 +
-+    /// q2: open a new control connection and map stream, from a task, until one is open.
-+    fn start_reconnect(&mut self, slf: &ActorRef<Self>, link_gen: u32) {
++    /// q2: open a new control connection and map stream, from a task, until one is open: after
++    /// the link change `link_gen`, or after the map stream was lost (`None`).
++    fn start_reconnect(&mut self, slf: &ActorRef<Self>, link_gen: Option<u32>) {
++        ts_control::q2::CONTROL_RECONNECTING.store(true, core::sync::atomic::Ordering::Relaxed);
 +        self.stream_gen += 1;
 +        let stream_gen = self.stream_gen;
 +        let aref = slf.downgrade();
@@ -1146,7 +1317,7 @@ index 022bb7e..bfa8ed8 100644
 +            task.abort();
 +        }
 +        self.update_task = None;
-+        self.start_reconnect(ctx.actor_ref(), msg.generation);
++        self.start_reconnect(ctx.actor_ref(), Some(msg.generation));
 +    }
 +}
 +
@@ -1159,11 +1330,14 @@ index 022bb7e..bfa8ed8 100644
 +            return;
 +        }
 +        self.reconnect = None;
++        ts_control::q2::CONTROL_RECONNECTING.store(false, core::sync::atomic::Ordering::Relaxed);
 +        ts_control::q2::count(&ts_control::q2::CONTROL_RECONNECTS);
 +        self.state = RegState::Registered(msg.conn);
-+        self.link_gen_pending = Some(msg.link_gen);
++        if msg.link_gen.is_some() {
++            self.link_gen_pending = msg.link_gen;
++        }
 +        self.attach_map_stream(ctx.actor_ref(), msg.reader);
-+        tracing::info!(generation = msg.link_gen, "control reconnected");
++        tracing::info!(generation = ?msg.link_gen, "control reconnected");
 +        if msg.endpoints != self.endpoints {
 +            // Endpoints that changed while the stream request was on its way.
 +            self.update_map_request();
@@ -1171,7 +1345,7 @@ index 022bb7e..bfa8ed8 100644
      }
  }
  
-@@ -363,7 +621,8 @@ impl Message<AuthRequired> for ControlRunner {
+@@ -363,7 +653,8 @@ impl Message<AuthRequired> for ControlRunner {
              pending_auth_requests,
          } = core::mem::replace(&mut self.state, RegState::AuthRequired(auth_url.clone()))
          else {
@@ -1181,7 +1355,7 @@ index 022bb7e..bfa8ed8 100644
              return;
          };
  
-@@ -402,18 +661,25 @@ impl Message<RegisterResult> for ControlRunner {
+@@ -402,18 +693,25 @@ impl Message<RegisterResult> for ControlRunner {
          self.state
              .update(RegState::Registered(conn.clone()), AuthResponse::Authorized);
  
@@ -1200,9 +1374,9 @@ index 022bb7e..bfa8ed8 100644
 +        {
 +            Ok(reader) => reader,
 +            Err(e) => {
-+                // q2: a failed stream request restarts this actor (and its registration).
-+                tracing::error!(error = %e, "map stream request failed");
-+                ctx.stop();
++                // q2: the registration stays; the map stream is opened again with backoff.
++                tracing::warn!(error = %e, "map stream request failed: reconnecting");
++                self.start_reconnect(ctx.actor_ref(), None);
 +                return;
 +            }
 +        };
@@ -1212,7 +1386,7 @@ index 022bb7e..bfa8ed8 100644
      }
  }
  
-@@ -423,12 +689,12 @@ enum PendingNodeRequest {
+@@ -423,12 +721,12 @@ enum PendingNodeRequest {
      SelfNode(ReplySender<Option<Node>>),
  }
  
@@ -1227,7 +1401,7 @@ index 022bb7e..bfa8ed8 100644
          ctx: &mut Context<Self, Self::Reply>,
      ) {
          let msg = match msg {
-@@ -439,6 +705,12 @@ impl Message<StreamMessage<Arc<StateUpdate>, (), ()>> for ControlRunner {
+@@ -439,13 +737,28 @@ impl Message<StreamMessage<Arc<StateUpdate>, (), ()>> for ControlRunner {
  
              StreamMessage::Next(msg) => msg,
  
@@ -1237,10 +1411,16 @@ index 022bb7e..bfa8ed8 100644
 +                return;
 +            }
 +
++            // q2: control went away (or the connection did). The registration, peers, routes and
++            // DERP stay, and a new connection and map stream are opened with backoff.
              StreamMessage::Finished(_) => {
-                 tracing::error!("state update stream terminated");
-                 ctx.stop();
-@@ -446,6 +718,11 @@ impl Message<StreamMessage<Arc<StateUpdate>, (), ()>> for ControlRunner {
+-                tracing::error!("state update stream terminated");
+-                ctx.stop();
++                tracing::warn!("state update stream terminated: reconnecting");
++                self.stream_task = None;
++                self.update_task = None;
++                self.start_reconnect(ctx.actor_ref(), None);
+                 return;
              }
          };
  
@@ -1252,7 +1432,7 @@ index 022bb7e..bfa8ed8 100644
          if let RegState::Registered(conn) = &self.state {
              let _ = handle_ping(&msg, &self.params.config.server_url, conn).await;
          }
-@@ -462,7 +739,7 @@ impl Message<StreamMessage<Arc<StateUpdate>, (), ()>> for ControlRunner {
+@@ -462,7 +775,7 @@ impl Message<StreamMessage<Arc<StateUpdate>, (), ()>> for ControlRunner {
                      true,
                  )
                  .await
@@ -1261,7 +1441,7 @@ index 022bb7e..bfa8ed8 100644
          {
              tracing::trace!(new_dial_plan = ?dial_plan);
          }
-@@ -502,7 +779,7 @@ impl Message<direct::NewEndpoints> for ControlRunner {
+@@ -502,7 +815,7 @@ impl Message<direct::NewEndpoints> for ControlRunner {
          }
  
          self.endpoints = msg.0.to_vec();
@@ -1270,7 +1450,7 @@ index 022bb7e..bfa8ed8 100644
      }
  }
  
-@@ -515,7 +792,7 @@ impl Message<DerpLatencyMeasurement> for ControlRunner {
+@@ -515,7 +828,7 @@ impl Message<DerpLatencyMeasurement> for ControlRunner {
          }
  
          self.derp_latency_measurement = Some(msg);
@@ -1279,7 +1459,7 @@ index 022bb7e..bfa8ed8 100644
      }
  }
  
-@@ -543,9 +820,17 @@ impl kameo::Actor for DialerActor {
+@@ -543,9 +856,17 @@ impl kameo::Actor for DialerActor {
  impl DialerActor {
      #[message]
      async fn dial_next(&mut self, url: url::Url) -> Result<HttpConn, ts_control::Error> {
@@ -1786,13 +1966,19 @@ index 6e4e32f..c7f260e 100644
  
  /// Establishes a TLS stream with a server over an existing connection.
 diff --git a/src/lib.rs b/src/lib.rs
-index 4a2f7b7..fc0902b 100644
+index 4a2f7b7..689df5b 100644
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -288,6 +288,23 @@ impl Device {
+@@ -288,6 +288,29 @@ impl Device {
              .map_err(Into::into)
      }
  
++    /// q2: whether the device's runtime is still running. A runtime that stopped (an actor that
++    /// failed past its supervisor's restart limit) answers no request again.
++    pub fn is_running(&self) -> bool {
++        self.runtime.is_alive()
++    }
++
 +    /// Tell the device that the host's network link changed: a new address, gateway or
 +    /// interface, or the network back after a loss (a Wi-Fi radio waking, a new DHCP lease).
 +    ///

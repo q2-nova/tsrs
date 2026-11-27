@@ -12,7 +12,7 @@ concurrency:
 jobs:
   host:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -40,3 +40,8 @@ jobs:
         run: |
           python3 build.py host --out build/host
           python3 ci/smoke.py --tsrsd build/host/tsrsd
+      - name: Control loss and a late control server on the generated tailnet
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          CARGO_TARGET_DIR=build/target-pgo-peer CARGO_BUILD_JOBS=2 cargo build --release --offline --locked --features pgo-peer
+          python3 ci/control.py --tsrsd build/host/tsrsd --peer build/target-pgo-peer/release/tsrsd

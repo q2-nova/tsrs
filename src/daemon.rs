@@ -1,8 +1,10 @@
 //! The daemon: keys, the LocalAPI socket, the proxy, the device and the
 //! watchdog. A link change (the host's link returning or changing) is
-//! recovered in place by a running device. A deliberate restart (logout, a
+//! recovered in place by a running device, and so is the loss of the control
+//! server (the device reconnects with backoff). A deliberate restart (logout, a
 //! stale login link, the watchdog, a link change the device did not recover
-//! from in time or met before it was running) re-executes this binary in place:
+//! from in time or met before it was running, a device whose runtime stopped)
+//! re-executes this binary in place:
 //! same process ID, so q2nd's supervisor sees no exit, and nothing of the old
 //! device survives. The proxy's listening socket is handed to the new process,
 //! so a client that connects meanwhile waits in its queue instead of being
@@ -110,9 +112,9 @@ fn stats_line(shared: &Shared, counters: &proxy::Counters) -> String {
 pub fn link_words() -> String {
     use ts_control::q2::*;
     format!(
-        "link_changes={} control_reconnects={} derp_connects={} derp_errors={} paths_withdrawn={} map_update_failures={}",
+        "link_changes={} control_reconnects={} derp_connects={} derp_errors={} paths_withdrawn={} map_update_failures={} transports_closed={}",
         LINK_CHANGES.load(Relaxed), CONTROL_RECONNECTS.load(Relaxed), DERP_CONNECTS.load(Relaxed), DERP_ERRORS.load(Relaxed),
-        PATHS_WITHDRAWN.load(Relaxed), MAP_UPDATE_FAILURES.load(Relaxed)
+        PATHS_WITHDRAWN.load(Relaxed), MAP_UPDATE_FAILURES.load(Relaxed), ts_dataplane::async_tokio::TRANSPORTS_CLOSED.load(Relaxed)
     )
 }
 
@@ -464,12 +466,20 @@ pub async fn run(args: Daemon) -> ExitCode {
                         status.health = health;
                     }
                 }
+                if started.elapsed() >= watchdog::HOLD_OFF && shared.device.borrow().as_ref().is_some_and(|device| !device.is_running()) {
+                    // The runtime stopped (an actor failed past its restart limit): nothing in it
+                    // answers again, so start afresh.
+                    log!("device_stopped");
+                    log!("{}", stats_line(&shared, &counters));
+                    reexec("device_stopped", dog.last_stall_restart);
+                }
                 let sample = Sample {
                     monotonic: started.elapsed(),
                     boot: watchdog::uptime(&read("/proc/uptime")).unwrap_or(started.elapsed()),
                     map_messages: ts_control::q2::map_messages(),
                     running,
                     network_up,
+                    control_reconnecting: ts_control::q2::CONTROL_RECONNECTING.load(Relaxed),
                 };
                 if let Some(reason) = dog.tick(sample) {
                     log!("{}", stats_line(&shared, &counters));

@@ -28,7 +28,7 @@ build/host/tsrsd version
 
 The native tests use local fixtures for the CLI, proxy and daemon state. They require no tailnet account. `fetch` populates the Cargo cache and the test and build commands use it offline. Run `python3 build.py upstream-test` for the patched runtime and DERP dependency suites, which may fetch their own dev-dependencies.
 
-GitHub Actions runs `test_release.py`, `ci/test_smoke.py`, the native tests and the [smoke test](#smoke-test) of a host build on every pull request and push to `main`.
+GitHub Actions runs `test_release.py`, `ci/test_smoke.py`, the native tests, and the [smoke test](#smoke-test) and [control test](#control-test) of a host build on every pull request and push to `main`.
 
 ## Build for the Q2
 
@@ -66,6 +66,30 @@ python3 ci/smoke.py --tsrsd build/q2/tsrsd --qemu /path/to/qemu-mipsel \
 ```
 
 With `--qemu` the daemon and the shim run under user-mode QEMU with `-cpu P5600` and the SDK's sysroot. Use `bin/qemu-mipsel` from the Q2 QEMU release of q2-toolchain (`qemu-linux-x86_64.tar.gz`). `python3 ci/test_smoke.py` tests the smoke's checks on generated status documents and logs.
+
+## Control test
+
+`ci/control.py` runs a host build on the generated tailnet of `tools/pgo.py`
+(Headscale 0.29.7 with its DERP server, a host peer built with the `pgo-peer`
+feature, everything on 127.0.0.1) in a new user and network namespace. It
+checks that:
+
+- a node with fresh state started while control refuses connections stays
+  `Starting`, then signs in and reaches the peer once control starts, in the
+  same process;
+- a signed-in daemon whose control server stops for 40 s neither exits nor
+  restarts, and within 30 s of control's return reaches the peer again with a
+  new control connection.
+
+The device keeps its registration, peers and data plane while control is
+away and reconnects with backoff of 0.5 s to 10 s; the watchdog does not count
+control silence while it reconnects. A run takes about 100 s and downloads the
+pinned Headscale into `build/pgo-downloads` once.
+
+```sh
+CARGO_TARGET_DIR=build/target-pgo-peer cargo build --release --offline --locked --features pgo-peer
+python3 ci/control.py --tsrsd build/host/tsrsd --peer build/target-pgo-peer/release/tsrsd
+```
 
 ## License and attribution
 
@@ -110,10 +134,10 @@ feature set, the coverage summary with the named hot paths (packet filter,
 WireGuard, DERP, proxy copy loop), each phase and the training minutes.
 `build.py q2 --profile-use` refuses a receipt with another compiler or
 feature set and copies it into `result.json`. `q2-test` builds the daemon's
-tests and the dataplane's TSMP reject tests for the Q2 with the same profile
+tests and the dataplane's TSMP reject and transport queue tests for the Q2 with the same profile
 and runs them under `qemu-mipsel`. The test harness unwinds, as Cargo builds
 tests; the rest matches the release build. Training restarts a daemon that
-exits, as q2nd does: both nodes abort in `ts_dataplane` when control stops. Unprivileged user namespaces must be
+exits, as q2nd does. Unprivileged user namespaces must be
 allowed; on Ubuntu set `kernel.apparmor_restrict_unprivileged_userns=0`.
 The DERP-only phase needs `nft`.
 

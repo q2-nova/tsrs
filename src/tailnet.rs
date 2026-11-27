@@ -390,4 +390,31 @@ mod tests {
         assert!(tailnet_shaped("nas") && tailnet_shaped("nas.tail1234.ts.net.") && tailnet_shaped("NAS.Tail.TS.NET"));
         assert!(!tailnet_shaped("music.example.com") && !tailnet_shaped("autoeq.app"));
     }
+
+    /// A device started while control refuses connections starts, waits for sign-in without
+    /// an error, and tries control again with bounded backoff (tailscale-rs.patch,
+    /// `control_runner.rs`).
+    #[tokio::test]
+    async fn a_device_started_while_control_refuses_keeps_trying() {
+        // Bound and not listening: connections are refused.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let mut config = Config::from(tailscale::keys::PersistState::default());
+        config.control_server_url = format!("http://127.0.0.1:{port}").parse().unwrap();
+        let device = tokio::time::timeout(Duration::from_secs(10), Device::new(&config, None))
+            .await
+            .expect("Device::new returns while control refuses")
+            .expect("a device");
+        assert!(tokio::time::timeout(Duration::from_secs(3), device.is_authorized()).await.is_err(), "still waiting");
+        assert!(device.is_running());
+        // Control listens now, and drops each connection: the device connects again within the
+        // longest wait (10 s), and again after that attempt failed.
+        let listener = socket.listen(16).unwrap();
+        for attempt in 0..2 {
+            let accepted = tokio::time::timeout(Duration::from_secs(15), listener.accept()).await;
+            assert!(matches!(accepted, Ok(Ok(_))), "connection attempt {attempt}");
+        }
+        assert!(device.is_running());
+    }
 }
