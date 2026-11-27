@@ -21,6 +21,9 @@ jobs:
             [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]
             echo "${component#q2-}=$version" >> "$GITHUB_OUTPUT"
           done
+          qemu=$(jq -er .qemu release-lock.json)
+          [[ "$qemu" =~ ^qemu-v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]
+          echo "qemu=$qemu" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: q2-nova/q2-os
@@ -40,13 +43,16 @@ jobs:
           GH_TOKEN: ${{ secrets.Q2_COMPONENTS_READ_TOKEN || github.token }}
           OS_TAG: ${{ steps.lock.outputs.os }}
           COMPILER_TAG: ${{ steps.lock.outputs.toolchain }}
+          QEMU_TAG: ${{ steps.lock.outputs.qemu }}
         run: |
-          mkdir -p build/sdk-release build/compiler-release
+          mkdir -p build/sdk-release build/compiler-release build/qemu-release
           gh release download "$OS_TAG" -R q2-nova/q2-os -D build/sdk-release \
             -p mipsel-buildroot-linux-gnu_sdk-buildroot.tar.gz -p sdk-manifest.json -p sdk-test.json -p buildroot.config -p SHA256SUMS
           gh release download "$COMPILER_TAG" -R q2-nova/q2-toolchain -D build/compiler-release \
             -p compiler.tar.gz -p compiler.tar.gz.sha256
-      - name: Verify, relocate and build
+          gh release download "$QEMU_TAG" -R q2-nova/q2-toolchain -D build/qemu-release \
+            -p qemu-linux-x86_64.tar.gz -p qemu-linux-x86_64.tar.gz.sha256
+      - name: Verify, relocate, build and smoke-test
         run: bash ci/build-release.sh
       - name: Publish the tagged daemon
         if: github.event_name == 'push'
