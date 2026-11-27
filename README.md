@@ -91,6 +91,16 @@ CARGO_TARGET_DIR=build/target-pgo-peer cargo build --release --offline --locked 
 python3 ci/control.py --tsrsd build/host/tsrsd --peer build/target-pgo-peer/release/tsrsd
 ```
 
+## Core dumps
+
+`build.py`, `ci/smoke.py`, `ci/control.py` and `tools/pgo.py` watch for core
+dumps (`tools/cores.py`). qemu-user writes a crashed guest's core into the
+process's working directory, and the core carries the host's environment. A
+core found in the repository root, the current directory or a run's working
+directory is moved to `build/cores/` and reported with the crashed program,
+and the run exits non-zero. Investigate it with `gdb-multiarch` and the
+matching binary, then delete it. `.gitignore` excludes core files.
+
 ## License and attribution
 
 Original Q2 daemon and build code is available under the GNU General Public

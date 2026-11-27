@@ -31,7 +31,6 @@ import json
 import os
 from pathlib import Path
 import random
-import resource
 import shutil
 import socket
 import subprocess
@@ -42,6 +41,8 @@ import time
 import urllib.request
 
 HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE / 'tools'))
+import cores  # noqa: E402
 # Bump when the workloads or their durations change.
 TRAINING_VERSION = 1
 HEADSCALE = {
@@ -213,6 +214,7 @@ class Tailnet:
         self.processes, self.phases, self.daemon, self.restarts = [], [], None, []
         self.current = 'start'
         self.work.mkdir(parents=True)
+        cores.watch(self.work)
         # Unix socket paths have a 108-byte limit.
         self.sockets = Path(tempfile.mkdtemp(prefix='q2pgo-', dir='/tmp'))
 
@@ -563,7 +565,5 @@ def main():
 
 
 if __name__ == '__main__':
-    # qemu-user writes a guest core into the working directory on a crash,
-    # and the core carries the host environment. No dumps.
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    main()
+    with cores.watched():
+        main()

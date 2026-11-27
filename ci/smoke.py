@@ -15,7 +15,6 @@ import http.server
 import json
 import os
 from pathlib import Path
-import resource
 import signal
 import socket
 import subprocess
@@ -26,6 +25,8 @@ import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'tools'))
+import cores  # noqa: E402
 QEMU_CPU = "P5600"
 WAITING = "Waiting for the Tailscale control server"
 # The health sentences the daemon reports without a control server (daemon.rs).
@@ -240,7 +241,7 @@ def main():
     prefix = emulator_prefix(a.qemu and a.qemu.resolve(), a.sysroot and a.sysroot.resolve())
     version = cargo_version()
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="tsrsd-smoke-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="tsrsd-smoke-") as tmp, cores.swept(tmp):
         work = Path(tmp)
         try:
             status = run(a.tsrsd.resolve(), prefix, work, version)
@@ -254,7 +255,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # qemu-user writes a guest core into the working directory on a crash,
-    # and the core carries the host environment. No dumps.
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    main()
+    with cores.watched():
+        main()

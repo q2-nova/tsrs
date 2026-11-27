@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import os
-import resource
 import shutil
 import subprocess
 import sys
@@ -15,6 +14,8 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE / 'tools'))
+import cores  # noqa: E402
 # tailscale-rs main of 2026-11-20, after v0.7.1.
 TSRS_COMMIT = 'e88a60083ed2b9b2b8fd62733fe86ea887e72780'
 TSRS_URL = 'https://github.com/tailscale/tailscale-rs.git'
@@ -328,7 +329,5 @@ def main():
 
 
 if __name__ == '__main__':
-    # qemu-user writes a guest core into the working directory on a crash,
-    # and the core carries the host environment. No dumps.
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    main()
+    with cores.watched():
+        main()

@@ -22,6 +22,7 @@ jobs:
           python3 test_release.py
           python3 ci/test_smoke.py
           python3 test_pgo.py
+          python3 test_cores.py
       - name: Install the pinned Rust
         run: |
           toolchain=$(python3 -c 'import build; print(build.RUST_TOOLCHAIN)')
