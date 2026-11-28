@@ -28,7 +28,7 @@ build/host/tsrsd version
 
 The native tests use local fixtures for the CLI, proxy and daemon state. They require no tailnet account. `fetch` populates the Cargo cache and the test and build commands use it offline. Run `python3 build.py upstream-test` for the patched runtime and DERP dependency suites, which may fetch their own dev-dependencies.
 
-GitHub Actions runs `test_release.py`, `ci/test_smoke.py`, `test_pgo.py`, the native tests, and the [smoke test](#smoke-test) and [control test](#control-test) of a host build on every pull request and push to `main`.
+GitHub Actions runs `test_release.py`, `test_notices.py`, `ci/test_smoke.py`, `test_pgo.py`, the native tests, the [license check](#third-party-notices), and the [smoke test](#smoke-test) and [control test](#control-test) of a host build on every pull request and push to `main`.
 
 ## Build for the Q2
 
@@ -36,6 +36,7 @@ Use a relocated SDK from q2-os, the q2-os Rust linker shim `os/rust-link.py`, a 
 
 ```sh
 rustup toolchain install nightly-2026-11-12 --profile minimal
+cargo install --locked cargo-about --version 0.9.3 --features cli
 python3 build.py q2 \
   --sdk /path/to/relocated-sdk \
   --toolchain-repo /path/to/q2-toolchain \
@@ -45,7 +46,11 @@ python3 build.py q2 \
 python3 build.py admit --out build/q2
 ```
 
-The output directory contains the stripped MIPS ELF `tsrsd`, its `result.json` build record, `size.json`, and the debug companions under `symbols/`. Pass the directory to the Q2 OS composer with `--tsrsd build/q2`. Each build requires an unused output directory. Keep the companions with the exact shipped binary for diagnostics.
+The output directory contains the stripped MIPS ELF `tsrsd`, its `result.json` build record, `size.json`, the [third-party notices](#third-party-notices) in `licenses/THIRD-PARTY-NOTICES`, and the debug companions under `symbols/`. Pass the directory to the Q2 OS composer with `--tsrsd build/q2`. Each build requires an unused output directory. Keep the companions with the exact shipped binary for diagnostics.
+
+## Third-party notices
+
+Before compiling, `build.py q2` writes `licenses/THIRD-PARTY-NOTICES` with `tools/third_party_notices.py` and records its SHA-256 as `notices_sha256` in `result.json`; `tsrsd-q2.tar.gz` carries both. The file lists the Cargo packages of `tsrsd` for the Q2 target, including tailscale-rs and the tokio fork, and the standard library crates the X2000 compiler builds, then each distinct license text once. The tailscale-rs crates take the [BSD 3-Clause license](LICENSES/tailscale-rs.txt) of the pinned checkout. It uses the cargo-about release pinned in `tools/notices/notices.toml`. A dependency whose license is not in the `accepted` list of `tools/notices/about.toml`, or which has no license text, stops the build; `python3 tools/third_party_notices.py check` runs the same test in CI.
 
 ## Smoke test
 
@@ -168,3 +173,5 @@ distributed as the tailscale-rs patch and other dependencies retain their
 respective licenses and notices.
 
 The pinned upstream project's [BSD 3-Clause license](LICENSES/tailscale-rs.txt) applies to its code. Its source and original license notices are retained when building the dependency.
+
+The installed image carries the third-party notices of tsrsd in `/usr/share/licenses/tsrsd/` ([how they are generated](#third-party-notices)).

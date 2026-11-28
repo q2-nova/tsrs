@@ -22,7 +22,11 @@ tar -xzf "build/sdk-release/$sdk_name.tar.gz" -C build
 nightly=$(jq -er .rust_toolchain "$recipe/q2/toolchain/llvm/pin.json")
 rustup toolchain install "$nightly" --profile minimal
 export RUSTUP_TOOLCHAIN="$nightly"
+# build.py q2 writes the third-party notices with the pinned cargo-about.
+cargo install --locked cargo-about --features cli \
+  --version "$(python3 -c 'import tomllib; print(tomllib.load(open("tools/notices/notices.toml", "rb"))["cargo_about"])')"
 python3 test_release.py
+python3 test_notices.py
 python3 ci/test_smoke.py
 python3 test_pgo.py
 python3 build.py fetch

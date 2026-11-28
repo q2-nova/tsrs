@@ -10,11 +10,13 @@ runs:
 
 ```sh
 python3 test_release.py
+python3 test_notices.py
 python3 ci/test_smoke.py
 python3 test_pgo.py
 python3 build.py prepare
 python3 build.py fetch
 python3 build.py test
+python3 tools/third_party_notices.py check
 python3 build.py host --out build/host
 python3 ci/smoke.py --tsrsd build/host/tsrsd
 ```
@@ -28,8 +30,9 @@ needs the [Q2 build](README.md#build-for-the-q2) and the smoke test under
 ## CI
 
 The **Daemon checks** workflow runs on every pull request and push to
-`main`. It runs the Python tests, the native daemon tests, the smoke test of
-a host build and the control test on a generated tailnet. A pull request
+`main`. It runs the Python tests, the native daemon tests, the
+[license check](README.md#third-party-notices), the smoke test of a host
+build and the control test on a generated tailnet. A pull request
 merges after review once these checks pass.
 
 A daemon reaches the Q2 only as a tagged release. The **Build the Q2 network

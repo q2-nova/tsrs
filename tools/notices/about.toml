@@ -1,0 +1,31 @@
+# cargo-about configuration of tools/third_party_notices.py.
+#
+# A dependency whose license expression these licenses cannot satisfy fails
+# the notices check and the Q2 build. For an OR expression cargo-about takes
+# the first license of this list that satisfies it.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    # File-level copyleft: the source of these files is available, in
+    # third-party-source.tar.gz of each release. dyn-eq uses it.
+    "MPL-2.0",
+]
+# The Q2 target, mipsel-q2-os-linux-gnu, is a custom target spec; this triple
+# has the same cfg values for dependency selection.
+targets = ["mipsel-unknown-linux-gnu"]
+# Build scripts, proc-macro build dependencies and test code are not in the
+# shipped binary.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# The daemon itself (GPL-3.0-or-later); tools/notices/notices.toml lists it as
+# first party and the notices leave it out.
+[tsrsd]
+accepted = ["GPL-3.0-or-later"]

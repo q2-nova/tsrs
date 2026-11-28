@@ -24,9 +24,13 @@ RUST_TOOLCHAIN = 'nightly-2026-11-12'
 SOURCE_DATE_EPOCH = '1793404800'
 # Cargo features of a Q2 build; a profile's receipt must name the same set.
 Q2_FEATURES = {NAME: []}
+# Cargo features of the standard library a Q2 build compiles (-Zbuild-std).
+STD_FEATURES = ('panic-unwind', 'backtrace', 'backtrace-trace-only')
+# The third-party notices of a Q2 build, in its output and its release archive.
+NOTICES = 'licenses/THIRD-PARTY-NOTICES'
 # The daemon's own inputs: a change to any invalidates a build record.
 INPUTS = [
-    'Cargo.toml', 'Cargo.lock', 'build.py', 'tailscale-rs.patch',
+    'Cargo.toml', 'Cargo.lock', 'build.py', 'tailscale-rs.patch', 'tools/notices/about.toml', 'tools/notices/notices.toml',
     *sorted(str(p.relative_to(HERE)) for directory in ('src', 'tools')
             for p in (HERE / directory).glob('*') if p.suffix in ('.rs', '.py')),
 ]
@@ -187,9 +191,10 @@ def q2_environment(a):
         env.pop('CFLAGS_mipsel_q2_os_linux_gnu')
     cargo = ['cargo', '+' + RUST_TOOLCHAIN]
     target = ['--release', '--offline', '--locked', '-Zbuild-std=std,panic_abort',
-              '-Zbuild-std-features=panic-unwind,backtrace,backtrace-trace-only', '-Zjson-target-spec', '--target', spec]
+              '-Zbuild-std-features=' + ','.join(STD_FEATURES), '-Zjson-target-spec', '--target', spec]
     return dict(commit=commit, record=record, source_inputs=source_inputs, target_dir=target_dir, env=env,
-                cargo=cargo, target=target, prefix=prefix, readelf=readelf)
+                cargo=cargo, target=target, prefix=prefix, readelf=readelf,
+                std_library=compiler_work / 'install/lib/rustlib/src/rust/library')
 
 
 def q2(a):
@@ -197,6 +202,14 @@ def q2(a):
     build = q2_environment(a)
     commit, record, source_inputs, target_dir = (build[k] for k in ('commit', 'record', 'source_inputs', 'target_dir'))
     prefix, readelf = build['prefix'], build['readelf']
+    # The third-party notices of the daemon's Cargo packages for the target, the
+    # standard library the X2000 compiler builds and the tailscale-rs license
+    # (tools/notices). A license outside tools/notices/about.toml's accepted
+    # list, or a package without license text, stops the build here.
+    sys.path.insert(0, str(HERE / 'tools'))
+    import third_party_notices
+    notices, summary = third_party_notices.generate(NAME, features=Q2_FEATURES[NAME], toolchain=RUST_TOOLCHAIN,
+                                                    std_library=build['std_library'], std_features=STD_FEATURES)
     run([*build['cargo'], 'build', *build['target']], cwd=HERE, env=build['env'])
     if source_inputs != inputs() or prepare() != {key: record[key] for key in ('tailscale_rs_commit', 'patch_sha256')}:
         raise SystemExit('daemon sources changed during the build')
@@ -208,7 +221,10 @@ def q2(a):
     raw = (out / NAME).read_bytes()
     if raw[:6] != b'\x7fELF\x01\x01' or raw[18:20] != b'\x08\x00':
         raise SystemExit('not a little-endian ELF32 MIPS binary')
+    (out / NOTICES).parent.mkdir()
+    (out / NOTICES).write_text(notices)
     record.update(passed=True, target='q2', toolchain=RUST_TOOLCHAIN, source_commit=commit,
+                  notices_sha256=sha(out / NOTICES), notices_tool=summary['tool'],
                   q2_sha256=sha(out / NAME), bytes=len(raw), symbols_receipt_sha256=sha(out / 'symbols/receipt.json'),
                   size_sha256=sha(out / 'size.json'), inputs=source_inputs)
     (out / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
@@ -269,6 +285,9 @@ def admit(out):
             or record.get('q2_sha256') != sha(binary) or record.get('symbols_receipt_sha256') != sha(out / 'symbols/receipt.json')
             or record.get('size_sha256') != sha(out / 'size.json')):
         raise ValueError('tsrsd must be the binary of a passing build.py q2 output')
+    notices = out / NOTICES
+    if notices.is_symlink() or not notices.is_file() or record.get('notices_sha256') != sha(notices):
+        raise ValueError(f'tsrsd requires the third-party notices its build recorded ({NOTICES})')
     if record.get('inputs') != inputs() or record.get('tailscale_rs_commit') != TSRS_COMMIT or record.get('patch_sha256') != sha(PATCH):
         raise ValueError("tsrsd build inputs differ from this checkout")
     raw = binary.read_bytes()

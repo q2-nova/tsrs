@@ -1,0 +1,23 @@
+# Third-party notices of tsrsd (tools/third_party_notices.py; cargo-about
+# reads about.toml beside this file).
+
+# The cargo-about release every generation uses:
+#   cargo install --locked cargo-about --version 0.9.3 --features cli
+cargo_about = "0.9.3"
+
+# The daemon's own package, under GPL-3.0-or-later. It is not third-party
+# software and the notices leave it out.
+first_party = ["tsrsd"]
+
+# The binary, with the Cargo features of a Q2 build (build.py Q2_FEATURES).
+[binaries.tsrsd]
+manifest = "Cargo.toml"
+
+# Path packages under `path` that ship no license file of their own take
+# these license files. The tailscale-rs crates under crates/ have none; the
+# BSD 3-Clause license at the root of the pinned checkout covers them.
+# LICENSES/tailscale-rs.txt is that file.
+[[license_roots]]
+path = "build/tailscale-rs"
+license = "BSD-3-Clause"
+files = ["LICENSES/tailscale-rs.txt"]

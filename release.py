@@ -12,7 +12,7 @@ import subprocess
 import tarfile
 import tempfile
 
-FILES = ("tsrsd", "result.json", "size.json", "symbols/receipt.json")
+FILES = ("tsrsd", "result.json", "size.json", "symbols/receipt.json", "licenses/THIRD-PARTY-NOTICES")
 
 
 def read_json(path):
@@ -58,7 +58,8 @@ def pack(source, directory, out):
     sym = {name: symbols["artifacts"][name]["sha256"] for name in ("deployed", "debug", "unstripped")}
     sym.update(original_receipt_sha256=record["symbols_receipt_sha256"], debuglink_verified=True)
     runtime = {k: record[k] for k in ("bytes", "inputs", "passed", "target", "toolchain", "source_commit",
-                                       "tailscale_rs_commit", "patch_sha256", "q2_sha256", "build_dependencies")}
+                                       "tailscale_rs_commit", "patch_sha256", "q2_sha256", "build_dependencies",
+                                       "notices_sha256", "notices_tool")}
     if (not all(re.fullmatch("[0-9a-f]{64}", value) for value in record["build_dependencies"].values())
             or runtime["toolchain"] != load_producer(source).RUST_TOOLCHAIN):
         raise ValueError("unexpected build dependencies")
@@ -67,7 +68,8 @@ def pack(source, directory, out):
     runtime.update(profile=record.get("profile", "release"), features=record.get("features", producer.Q2_FEATURES),
                    pgo=record.get("pgo"))
     runtime.update(size_sha256=sha(dump(size)), symbols_receipt_sha256=sha(dump(sym)))
-    payload = dict(zip(FILES, (binary, dump(runtime), dump(size), dump(sym))))
+    notices = (directory / "licenses/THIRD-PARTY-NOTICES").read_bytes()
+    payload = dict(zip(FILES, (binary, dump(runtime), dump(size), dump(sym), notices)))
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=out.parent) as tmp:
         stage = Path(tmp) / "tsrsd-q2.tar.gz"

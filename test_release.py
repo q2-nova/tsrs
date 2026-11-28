@@ -20,6 +20,9 @@ class ReleaseArchive(unittest.TestCase):
         self.dir = Path(temp.name)
         self.out = self.dir / "tsrsd-q2.tar.gz"
         (self.dir / "symbols").mkdir()
+        (self.dir / "licenses").mkdir()
+        self.notices = b"Third-party software notices: tsrsd\n"
+        (self.dir / build.NOTICES).write_bytes(self.notices)
         binary = bytearray(52)
         binary[:7] = b'\x7fELF\x01\x01\x01'
         binary[16:20] = b'\x02\x00\x08\x00'
@@ -35,7 +38,8 @@ class ReleaseArchive(unittest.TestCase):
                            tailscale_rs_commit=build.TSRS_COMMIT, patch_sha256=build.sha(build.PATCH),
                            build_dependencies={"sdk_gcc_sha256": self.digest}, q2_sha256=self.digest,
                            bytes=len(binary), symbols_receipt_sha256=build.sha(self.dir / "symbols/receipt.json"),
-                           size_sha256=build.sha(self.dir / "size.json"))
+                           size_sha256=build.sha(self.dir / "size.json"),
+                           notices_sha256=build.sha(self.dir / build.NOTICES), notices_tool="cargo-about 0.9.3")
         self.write("result.json", self.record)
 
     def write(self, name, obj):
@@ -44,6 +48,23 @@ class ReleaseArchive(unittest.TestCase):
     def test_round_trip(self):
         release.pack(ROOT, self.dir, self.out)
         release.verify(ROOT, self.out)
+
+    def test_notices_are_carried(self):
+        release.pack(ROOT, self.dir, self.out)
+        with tarfile.open(self.out) as archive:
+            self.assertEqual(archive.extractfile(build.NOTICES).read(), self.notices)
+            record = json.load(archive.extractfile("result.json"))
+        self.assertEqual(record["notices_sha256"], hashlib.sha256(self.notices).hexdigest())
+        self.assertEqual(record["notices_tool"], "cargo-about 0.9.3")
+
+    def test_missing_or_changed_notices_refused(self):
+        (self.dir / build.NOTICES).write_bytes(b"changed\n")
+        with self.assertRaisesRegex(ValueError, "third-party notices"):
+            release.pack(ROOT, self.dir, self.out)
+        (self.dir / build.NOTICES).unlink()
+        with self.assertRaisesRegex(ValueError, "third-party notices"):
+            release.pack(ROOT, self.dir, self.out)
+        self.assertFalse(self.out.exists())
 
     def test_profile_receipt_is_carried(self):
         receipt = dict(program="tsrsd", profile_sha256="1" * 64, training_version=1)
